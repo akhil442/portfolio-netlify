@@ -31,7 +31,7 @@ export default function Overlay({ scrollYProgress }: OverlayProps) {
           Akhil Puttabanthi
         </h1>
         <p className="text-xl md:text-2xl text-gray-300 font-light drop-shadow-md">
-          Data Analyst | ML | Data Engineering
+          DE | AI & ML | Data Analyst
         </p>
       </motion.div>
 

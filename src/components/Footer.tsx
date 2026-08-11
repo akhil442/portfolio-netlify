@@ -21,7 +21,7 @@ export default function Footer() {
         {/* Social Links */}
         <div className="flex items-center gap-10">
           <a 
-            href="mailto:akhilputtabanthi123@gmail.com"
+            href="mailto:puttabanthi.akhil@gmail.com"
             className="p-4 rounded-full bg-white/5 border border-white/10 text-gray-400 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all duration-300"
             aria-label="Email"
           >
