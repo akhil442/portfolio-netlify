@@ -52,6 +52,14 @@ const projects = [
     tags: ['PyTorch', 'DeepLabV3', 'ResNet101'],
     link: 'https://github.com/akhil442/Semantic-Segmentation-using-DeepLabV3-ResNet101',
     github: 'https://github.com/akhil442/Semantic-Segmentation-using-DeepLabV3-ResNet101'
+  },
+  {
+    id: '07',
+    title: 'Coffee Sales Performance Dashboard',
+    description: 'Built a fully interactive self-service sales dashboard in Excel by joining Orders, Customers, and Products tables using XLOOKUP and INDEX MATCH. Structured data as Excel Tables for auto-expansion, applied data cleaning, and layered pivot charts with slicers and timeline filters — all connected to a shared pivot cache so every filter updates every visual in sync.',
+    tags: ['Excel', 'XLOOKUP', 'INDEX MATCH', 'Pivot Tables', 'Data Cleaning', 'Dashboard'],
+    link: 'https://github.com/akhil442/coffee-sales-dashboard-advance-Excel-',
+    github: 'https://github.com/akhil442/coffee-sales-dashboard-advance-Excel-'
   }
 ];
 
