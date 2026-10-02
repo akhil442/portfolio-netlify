@@ -1,0 +1,544 @@
+diff --git a/ANALYTICS_SETUP.md b/ANALYTICS_SETUP.md
+new file mode 100644
+index 0000000..516dffc
+--- /dev/null
++++ b/ANALYTICS_SETUP.md
+@@ -0,0 +1,105 @@
++# Privacy-conscious portfolio analytics — setup guide
++
++First-party analytics for this portfolio. No third-party tracking SDKs.
++Events are collected by `public/analytics.js` and sent to the site's own
++`/api/track` endpoint (a Netlify Edge Function), which stores them in
++Netlify Blobs and sends notifications server-side.
++
++## What is tracked
++
++| Event            | Trigger                                              | Notification |
++|------------------|------------------------------------------------------|--------------|
++| `page_view`      | Visitor opens the portfolio                          | Yes — once per anonymous session |
++| `resume_click`   | Visitor clicks the resume link (click only — nothing is added to the PDF) | Yes — once per session |
++| `project_click`  | Visitor clicks a project link in the projects section | Yes — once per session |
++| `contact_click`  | Visitor clicks an email (`mailto:`) link             | Yes — once per session |
++| `experience_view`| Experience section visibly on screen (~1.2s, once per session) | No — logged only |
++
++Privacy: anonymous session id in `sessionStorage` (dies with the tab), no
++cookies, no fingerprinting, no GPS, no precise location (country/region code
++only, from Netlify's server-side geo), Do Not Track is honored, and no
++keystrokes, form contents, or mouse movements are collected.
++
++## 1. Configure Netlify environment variables
++
++Netlify dashboard → your site → **Site settings → Environment variables**.
++Add these (all server-side only — never in frontend code):
++
++**Required for the private log:**
++- `ANALYTICS_ADMIN_KEY` — a long random secret, e.g. generated with
++  `openssl rand -hex 32`. The private log lives at
++  `https://YOUR-SITE.netlify.app/api/admin?key=ANALYTICS_ADMIN_KEY`.
++  Keep this URL private.
++
++**Notification channel (pick one):**
++
++Option A — ntfy.sh (recommended: free, no signup)
++- `NOTIFY_CHANNEL` = `ntfy`
++- `NTFY_TOPIC` = a long random string, e.g. `openssl rand -hex 16`.
++  Anyone who guesses the topic can read it, so make it unguessable.
++  Install the ntfy app (iOS/Android) or open `https://ntfy.sh/YOUR_TOPIC`
++  and subscribe to receive push alerts. Free tier is generous for this volume.
++
++Option B — Telegram (free, reliable push)
++- `NOTIFY_CHANNEL` = `telegram`
++- `TELEGRAM_BOT_TOKEN` — create a bot with @BotFather, copy the token.
++- `TELEGRAM_CHAT_ID` — message @userinfobot, copy your id.
++- ~5 minutes of setup, no cost, no practical limits at this volume.
++
++Option C — Email via Resend
++- `NOTIFY_CHANNEL` = `resend`
++- `RESEND_API_KEY` — from resend.com. Free: 100 emails/day.
++  Note: without a verified domain, Resend test mode only delivers to your
++  own address. Set `NOTIFY_EMAIL` to the destination address, and
++  optionally `RESEND_FROM` (defaults to `portfolio@resend.dev`).
++
++After changing environment variables, **redeploy** the site so edge
++functions pick them up (Netlify dashboard → Deploys → Trigger deploy).
++
++## 2. Deploy through the existing GitHub → Netlify workflow
++
++Nothing special — this uses your normal flow:
++
++```bash
++git add public/analytics.js netlify/edge-functions/track.js netlify/edge-functions/admin.js \
++  src/app/layout.tsx src/components/Footer.tsx src/components/Experience.tsx \
++  src/components/Projects.tsx ANALYTICS_SETUP.md
++git commit -m "Add privacy-conscious first-party analytics"
++git push origin main
++```
++
++Netlify auto-detects the push, rebuilds, and deploys the edge functions
++alongside the site. No `netlify.toml` changes were needed (functions use
++inline path config).
++
++## 3. Test each event
++
++1. Open the deployed site in a **private/incognito window** (fresh session).
++2. Scroll through the experience section, click the Resume button, click a
++   project link, click the email link.
++3. You should receive notifications: new visit, resume click, project click,
++   contact click (one per type — repeat clicks in the same tab won't re-notify).
++4. Open `https://YOUR-SITE.netlify.app/api/admin?key=YOUR_KEY` and confirm
++   the events appear with type, UTC timestamp, page, detail, country/region,
++   and session id.
++5. Wrong key (`?key=nope`) must return **401 Unauthorized**.
++
++If a notification doesn't arrive, check the edge function logs:
++Netlify dashboard → your site → **Functions → track** (or admin) → logs.
++
++## 4. Limitations (read before relying on this)
++
++- **A resume click does not prove the PDF was read.** It only means the link
++  was clicked; the PDF opens on an external site (`akhil442.github.io`).
++- **Analytics cannot identify a visitor as a recruiter** — or as anyone.
++  Sessions are anonymous by design; there is deliberately no identity.
++- **Location is coarse** (country/region from IP geolocation). VPNs, work
++  networks, and mobile carriers make it approximate or wrong.
++- **Ad blockers / Do Not Track**: some blockers may block the first-party
++  `/api/track` call, and Do Not Track visitors are skipped entirely. Counts
++  are a lower bound, not exact.
++- **Notifications are best-effort**: if the notification service (ntfy /
++  Telegram / Resend) is down or misconfigured, the event is still logged
++  but no alert is sent. Check the private log as the source of truth.
++- **Notifications are not confirmed working** until you complete the env-var
++  configuration above and the tests in section 3 succeed.
+diff --git a/netlify/edge-functions/admin.js b/netlify/edge-functions/admin.js
+new file mode 100644
+index 0000000..413bcd4
+--- /dev/null
++++ b/netlify/edge-functions/admin.js
+@@ -0,0 +1,98 @@
++/* GET /api/admin?key=YOUR_SECRET — private event log (Netlify Edge Function).
++ *
++ * - Protected by ANALYTICS_ADMIN_KEY (Netlify env var). Wrong/missing key → 401.
++ * - Renders a simple HTML table: event type, timestamp, page/section,
++ *   truncated anonymous session id, coarse country/region.
++ * - Not linked from anywhere on the site. Keep the URL + key private.
++ */
++import { getStore } from "@netlify/blobs";
++
++export const config = { path: "/api/admin" };
++
++function esc(s) {
++  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
++    "&": "&amp;",
++    "<": "&lt;",
++    ">": "&gt;",
++    '"': "&quot;",
++    "'": "&#39;",
++  })[c]);
++}
++
++export default async (req) => {
++  const url = new URL(req.url);
++  const adminKey = Netlify.env.get("ANALYTICS_ADMIN_KEY") || "";
++  if (!adminKey || url.searchParams.get("key") !== adminKey) {
++    return new Response("Unauthorized", { status: 401 });
++  }
++
++  const store = getStore("portfolio-events");
++  const listed = await store.list();
++  const keys = (listed.blobs || [])
++    .map((b) => b.key)
++    .filter((k) => !k.startsWith("notified:")) // skip notification state
++    .sort()
++    .reverse()
++    .slice(0, 200);
++
++  const events = [];
++  for (const key of keys) {
++    const e = await store.get(key, { type: "json" });
++    if (e) events.push(e);
++  }
++
++  const rows = events
++    .map(
++      (e) => `
++      <tr>
++        <td><span class="pill">${esc(e.type)}</span></td>
++        <td class="mono">${esc(e.ts)}</td>
++        <td class="mono">${esc(e.page)}</td>
++        <td>${esc(e.label)}</td>
++        <td class="mono">${esc(e.country)}${e.region ? " / " + esc(e.region) : ""}</td>
++        <td class="mono">${esc(String(e.sessionId).slice(0, 8))}…</td>
++      </tr>`
++    )
++    .join("");
++
++  const html = `<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Portfolio events (private)</title>
++<style>
++  body { background: #121212; color: #e5e5e5; font-family: ui-monospace, monospace; margin: 0; padding: 24px; }
++  h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
++  p.sub { color: #737373; font-size: 12px; margin-top: 0; margin-bottom: 20px; }
++  table { border-collapse: collapse; width: 100%; font-size: 12px; }
++  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
++  th { color: #a3a3a3; text-transform: uppercase; letter-spacing: .1em; font-size: 10px; }
++  .mono { white-space: nowrap; }
++  .pill { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
++  .empty { color: #737373; padding: 32px 0; }
++</style>
++</head>
++<body>
++  <h1>Portfolio events</h1>
++  <p class="sub">Private log · newest first · showing up to ${events.length} events · anonymous sessions only</p>
++  ${
++    events.length === 0
++      ? '<p class="empty">No events recorded yet.</p>'
++      : `<table>
++      <thead><tr><th>Event</th><th>Timestamp (UTC)</th><th>Page</th><th>Detail</th><th>From</th><th>Session</th></tr></thead>
++      <tbody>${rows}</tbody>
++    </table>`
++  }
++</body>
++</html>`;
++
++  return new Response(html, {
++    headers: {
++      "Content-Type": "text/html; charset=utf-8",
++      "Cache-Control": "no-store",
++      // Never index this page.
++      "X-Robots-Tag": "noindex, nofollow",
++    },
++  });
++};
+diff --git a/netlify/edge-functions/track.js b/netlify/edge-functions/track.js
+new file mode 100644
+index 0000000..f194671
+--- /dev/null
++++ b/netlify/edge-functions/track.js
+@@ -0,0 +1,137 @@
++/* POST /api/track — first-party analytics ingestion (Netlify Edge Function).
++ *
++ * Privacy rules enforced here:
++ * - Only an allowlist of event types is accepted.
++ * - No IP addresses are stored. Location is coarse only: country + region
++ *   code from Netlify's server-side geo (no GPS, nothing precise).
++ * - No keystrokes, form contents, or mouse movements are ever collected
++ *   (the client never sends them).
++ * - Secrets (notification credentials) live in Netlify environment variables,
++ *   never in client-side code.
++ */
++import { getStore } from "@netlify/blobs";
++
++export const config = { path: "/api/track" };
++
++const ALLOWED = new Set([
++  "page_view",
++  "resume_click",
++  "project_click",
++  "experience_view",
++  "contact_click",
++]);
++
++function notifyText(title, event) {
++  const loc = [event.region, event.country].filter(Boolean).join(", ");
++  let text = `${title}\nTime: ${event.ts}\nPage: ${event.page}`;
++  if (event.label) text += `\nDetail: ${event.label}`;
++  if (loc) text += `\nFrom: ${loc}`;
++  return text;
++}
++
++async function sendNotification(title, event) {
++  const channel = (Netlify.env.get("NOTIFY_CHANNEL") || "ntfy").toLowerCase();
++  const text = notifyText(title, event);
++  try {
++    if (channel === "ntfy") {
++      // ntfy.sh: free, no signup. NTFY_TOPIC is a long random string (the secret).
++      const topic = Netlify.env.get("NTFY_TOPIC");
++      if (!topic) return;
++      await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
++        method: "POST",
++        body: text,
++        headers: { Title: title, Tags: "eye" },
++      });
++    } else if (channel === "telegram") {
++      const token = Netlify.env.get("TELEGRAM_BOT_TOKEN");
++      const chatId = Netlify.env.get("TELEGRAM_CHAT_ID");
++      if (!token || !chatId) return;
++      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ chat_id: chatId, text }),
++      });
++    } else if (channel === "resend") {
++      const apiKey = Netlify.env.get("RESEND_API_KEY");
++      const to = Netlify.env.get("NOTIFY_EMAIL");
++      if (!apiKey || !to) return;
++      await fetch("https://api.resend.com/emails", {
++        method: "POST",
++        headers: {
++          Authorization: `Bearer ${apiKey}`,
++          "Content-Type": "application/json",
++        },
++        body: JSON.stringify({
++          from: Netlify.env.get("RESEND_FROM") || "portfolio@resend.dev",
++          to: [to],
++          subject: title,
++          text,
++        }),
++      });
++    }
++  } catch {
++    // A notification failure must never break event logging.
++  }
++}
++
++export default async (req, context) => {
++  if (req.method !== "POST") {
++    return new Response("Method not allowed", { status: 405 });
++  }
++
++  let body;
++  try {
++    body = await req.json();
++  } catch {
++    return new Response("Bad request", { status: 400 });
++  }
++
++  const type = typeof body.type === "string" ? body.type : "";
++  const sessionId =
++    typeof body.sessionId === "string" ? body.sessionId.slice(0, 64) : "";
++  if (!ALLOWED.has(type) || !sessionId) {
++    return new Response("Bad request", { status: 400 });
++  }
++
++  const geo = context.geo || {};
++  const event = {
++    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
++    type,
++    sessionId,
++    page: String(body.page || "/").slice(0, 200),
++    label: String(body.label || "").slice(0, 200),
++    ts: new Date().toISOString(),
++    // Coarse only — no city, no IP, nothing precise.
++    country: (geo.country && geo.country.code) || "",
++    region: (geo.subdivision && geo.subdivision.code) || "",
++  };
++
++  const store = getStore("portfolio-events");
++  await store.setJSON(event.id, event);
++
++  // Notification grouping: at most one notification per event type per
++  // anonymous session. experience_view is logged only (no notification).
++  const stateKey = `notified:${sessionId}`;
++  const state = (await store.get(stateKey, { type: "json" })) || {};
++  let title = null;
++  if (type === "page_view" && !state.page_view) {
++    title = "👁 New portfolio visit";
++    state.page_view = event.ts;
++  } else if (type === "resume_click" && !state.resume_click) {
++    title = "📄 Resume clicked";
++    state.resume_click = event.ts;
++  } else if (type === "project_click" && !state.project_click) {
++    title = `🚀 Project clicked: ${event.label || "a project"}`;
++    state.project_click = event.ts;
++  } else if (type === "contact_click" && !state.contact_click) {
++    title = "✉️ Contact link clicked";
++    state.contact_click = event.ts;
++  }
++
++  if (title) {
++    await store.setJSON(stateKey, state);
++    await sendNotification(title, event);
++  }
++
++  return new Response("ok", { status: 200 });
++};
+diff --git a/public/analytics.js b/public/analytics.js
+new file mode 100644
+index 0000000..2cd0cf4
+--- /dev/null
++++ b/public/analytics.js
+@@ -0,0 +1,118 @@
++/* Privacy-conscious first-party analytics.
++ *
++ * - No third-party SDKs, no cookies, no fingerprinting, no GPS/location permission.
++ * - Anonymous session id lives in sessionStorage (dies with the tab).
++ * - Honors Do Not Track.
++ * - Events are POSTed to this site's own /api/track endpoint (a Netlify Edge Function).
++ * - Analytics must never break the site: every failure path is silent.
++ */
++(function () {
++  'use strict';
++
++  if (typeof navigator !== 'undefined' && navigator.doNotTrack === '1') return;
++
++  var ENDPOINT = '/api/track';
++
++  function getSessionId() {
++    try {
++      var sid = sessionStorage.getItem('pa_sid');
++      if (!sid) {
++        sid =
++          typeof crypto !== 'undefined' && crypto.randomUUID
++            ? crypto.randomUUID()
++            : 's-' + Date.now() + '-' + Math.random().toString(36).slice(2);
++        sessionStorage.setItem('pa_sid', sid);
++      }
++      return sid;
++    } catch (e) {
++      return 'ephemeral';
++    }
++  }
++  var SESSION_ID = getSessionId();
++
++  function send(type, label) {
++    try {
++      var payload = JSON.stringify({
++        type: type,
++        sessionId: SESSION_ID,
++        page: location.pathname,
++        label: (label || '').slice(0, 200),
++      });
++      if (navigator.sendBeacon) {
++        navigator.sendBeacon(
++          ENDPOINT,
++          new Blob([payload], { type: 'application/json' })
++        );
++      } else {
++        fetch(ENDPOINT, {
++          method: 'POST',
++          keepalive: true,
++          headers: { 'Content-Type': 'application/json' },
++          body: payload,
++        });
++      }
++    } catch (e) {
++      /* never break the page */
++    }
++  }
++
++  /* 1. page_view — once per page load */
++  function trackPageView() {
++    send('page_view', document.referrer || '(direct)');
++  }
++  if (document.readyState === 'complete') trackPageView();
++  else window.addEventListener('load', trackPageView);
++
++  /* 2/3/5. click classification — delegated, so dynamically rendered links work too */
++  document.addEventListener('click', function (e) {
++    var t = e.target;
++    var a = t && t.closest ? t.closest('a') : null;
++    if (!a) return;
++    var href = a.getAttribute('href') || '';
++
++    if (href.indexOf('mailto:') === 0) {
++      send('contact_click', 'email link');
++    } else if (/resume/i.test(href) || /\.pdf(\?|#|$)/i.test(href)) {
++      // NOTE: only the click is tracked — nothing is added to the PDF itself.
++      send('resume_click', href.slice(0, 200));
++    } else if (a.closest('#projects')) {
++      var title = (a.getAttribute('aria-label') || a.textContent || href)
++        .trim()
++        .slice(0, 120);
++      send('project_click', title);
++    }
++  });
++
++  /* 4. experience_view — fires once per session, only when the section is
++   * genuinely visible (>=40% for ~1.2s). Reliable enough without scroll-spam. */
++  function watchExperience() {
++    var el = document.getElementById('experience');
++    if (!el || !('IntersectionObserver' in window)) return;
++    var fired = false;
++    var timer = null;
++    var io = new IntersectionObserver(
++      function (entries) {
++        if (fired) return;
++        var visible =
++          entries[0].isIntersecting && entries[0].intersectionRatio >= 0.4;
++        if (visible && !timer) {
++          timer = setTimeout(function () {
++            fired = true;
++            send('experience_view', 'experience section');
++            io.disconnect();
++          }, 1200);
++        } else if (!visible && timer) {
++          clearTimeout(timer);
++          timer = null;
++        }
++      },
++      { threshold: [0, 0.4, 1] }
++    );
++    io.observe(el);
++  }
++  if (document.readyState === 'loading') {
++    document.addEventListener('DOMContentLoaded', watchExperience);
++  } else {
++    watchExperience();
++  }
++})();
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index a36cde0..5d908e7 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -1,5 +1,6 @@
+ import type { Metadata } from "next";
+ import localFont from "next/font/local";
++import Script from "next/script";
+ import "./globals.css";
+ 
+ const geistSans = localFont({
+@@ -29,6 +30,8 @@ export default function RootLayout({
+         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+       >
+         {children}
++        {/* Privacy-conscious first-party analytics (no third-party SDKs) */}
++        <Script src="/analytics.js" strategy="afterInteractive" />
+       </body>
+     </html>
+   );
+diff --git a/src/components/Experience.tsx b/src/components/Experience.tsx
+index a563d63..1fedb71 100644
+--- a/src/components/Experience.tsx
++++ b/src/components/Experience.tsx
+@@ -45,7 +45,7 @@ export default function Experience() {
+   });
+ 
+   return (
+-    <section className="bg-[#121212] overflow-hidden">
++    <section id="experience" className="bg-[#121212] overflow-hidden">
+       
+       {/* Infinite Marquee */}
+       <div className="relative border-y border-white/5 py-6 flex overflow-hidden whitespace-nowrap bg-white/[0.02]">
+diff --git a/src/components/Footer.tsx b/src/components/Footer.tsx
+index 5f80d50..aac3f8e 100644
+--- a/src/components/Footer.tsx
++++ b/src/components/Footer.tsx
+@@ -16,6 +16,11 @@ export default function Footer() {
+           <p className="text-sm text-gray-500 font-mono tracking-widest uppercase">
+             &copy; {currentYear} All rights reserved.
+           </p>
++          <p className="text-xs text-gray-600 font-mono mt-3 max-w-xs leading-relaxed">
++            Privacy: this site records anonymous usage events (page views and
++            link clicks) to understand engagement. No personal data, precise
++            location, or browsing history is collected.
++          </p>
+         </div>
+ 
+         {/* Social Links */}
+diff --git a/src/components/Projects.tsx b/src/components/Projects.tsx
+index 1e4fe80..d0fb52c 100644
+--- a/src/components/Projects.tsx
++++ b/src/components/Projects.tsx
+@@ -67,7 +67,7 @@ export default function Projects() {
+   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+ 
+   return (
+-    <section className="bg-[#121212] py-32 px-8 md:px-24 border-t border-white/5">
++    <section id="projects" className="bg-[#121212] py-32 px-8 md:px-24 border-t border-white/5">
+       <div className="max-w-7xl mx-auto">
+         <h2 className="text-sm tracking-[0.2em] text-gray-500 uppercase mb-12 font-mono">Selected Work // 2024</h2>
+         

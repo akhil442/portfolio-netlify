@@ -67,7 +67,7 @@ export default function Projects() {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   return (
-    <section className="bg-[#121212] py-32 px-8 md:px-24 border-t border-white/5">
+    <section id="projects" className="bg-[#121212] py-32 px-8 md:px-24 border-t border-white/5">
       <div className="max-w-7xl mx-auto">
         <h2 className="text-sm tracking-[0.2em] text-gray-500 uppercase mb-12 font-mono">Selected Work // 2024</h2>
         

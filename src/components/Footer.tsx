@@ -16,6 +16,11 @@ export default function Footer() {
           <p className="text-sm text-gray-500 font-mono tracking-widest uppercase">
             &copy; {currentYear} All rights reserved.
           </p>
+          <p className="text-xs text-gray-600 font-mono mt-3 max-w-xs leading-relaxed">
+            Privacy: this site records anonymous usage events (page views and
+            link clicks) to understand engagement. No personal data, precise
+            location, or browsing history is collected.
+          </p>
         </div>
 
         {/* Social Links */}

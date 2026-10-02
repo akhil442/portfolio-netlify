@@ -45,7 +45,7 @@ export default function Experience() {
   });
 
   return (
-    <section className="bg-[#121212] overflow-hidden">
+    <section id="experience" className="bg-[#121212] overflow-hidden">
       
       {/* Infinite Marquee */}
       <div className="relative border-y border-white/5 py-6 flex overflow-hidden whitespace-nowrap bg-white/[0.02]">
