@@ -40,7 +40,8 @@ async function sendNotification(title, event) {
       await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
         method: "POST",
         body: text,
-        headers: { Title: title, Tags: "eye" },
+        headers: { Title: title.replace(/[^\x20-\x7E]/g, "").trim() || "Portfolio alert", Tags: "eye" },
+,
       });
     } else if (channel === "telegram") {
       const token = Netlify.env.get("TELEGRAM_BOT_TOKEN");
