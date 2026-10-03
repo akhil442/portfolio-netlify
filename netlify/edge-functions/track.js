@@ -37,11 +37,13 @@ async function sendNotification(title, event) {
       // ntfy.sh: free, no signup. NTFY_TOPIC is a long random string (the secret).
       const topic = Netlify.env.get("NTFY_TOPIC");
       if (!topic) return;
+      // HTTP headers must be ASCII only — strip anything else (e.g. emojis)
+      // or the fetch throws and the notification is silently lost.
+      const safeTitle = title.replace(/[^\x20-\x7E]/g, "").trim() || "Portfolio alert";
       await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
         method: "POST",
         body: text,
-        headers: { Title: title.replace(/[^\x20-\x7E]/g, "").trim() || "Portfolio alert", Tags: "eye" },
-,
+        headers: { Title: safeTitle, Tags: "eye" },
       });
     } else if (channel === "telegram") {
       const token = Netlify.env.get("TELEGRAM_BOT_TOKEN");
